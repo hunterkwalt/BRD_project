@@ -42,7 +42,6 @@ libs <- "library_sizes/library_sizes_all_samples.tsv"
 ctl_samples <- "control_samples_to_remove.txt"
 il <- "/mnt/md0/brd_project/virus_coverage/depth_stats/illumina_final_depth.tsv"
 np <- "/mnt/md0/brd_project/virus_coverage/depth_stats/nanopore_final_depth.tsv"
-phage_types <- "/mnt/md0/brd_project/viral_diversity/checkv_output/phage_type.txt"
 
 
 #sequencing type data
