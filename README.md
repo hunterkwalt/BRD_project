@@ -5,3 +5,5 @@
 **cow_immune_final** - code to reproduce host immune analysis 
 
 **Pairwise_Bact_Zhang_Metric.ipynb** - code to reproduce Zhang's metric analysis
+
+**analysis files** Associated files to conduct the analysis.
