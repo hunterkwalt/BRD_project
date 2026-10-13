@@ -8,10 +8,10 @@ library(ggpubr)
 library(ggrepel)
 library(org.Bt.eg.db)
 organism = org.Bt.eg.db
-library(pathview)
+#library(pathview)
 library(edgeR)
 library(microbiome)
-library(tidyplots)
+#library(tidyplots)
 library(cowplot)
 library(clusterProfiler)
 library(rrvgo)
@@ -37,7 +37,7 @@ colnames(ill) <- "SRA"
 nan$Seqtype <- "Nanopore"
 ill$Seqtype <- "Illumina"
 st <- rbind(nan, ill)
-
+ols <- c("SRR23246845", "SRR23246847", "SRR23246844", "SRR23246846", "SRR1776513")
 
 #samples with no virus
 novir <- "/mnt/md0/brd_project/no_virus_rpkm.csv"
@@ -54,7 +54,7 @@ CI <- read.table(file = "/mnt/md0/brd_project/cow_immune/samps_with_nanopore.txt
 #CI <- data.frame(CI[-which(CI$V1 %in% nv$SRA),]) # FOR VIRUSES
 #CI <- data.frame(CI[which(CI$V1 %in% nv$SRA),]) # FOR NO VIRUSES
 colnames(CI) <- "V1"
-CI <- data.frame(CI[-which(CI$V1 %in% ctl$V1),])
+CI <- data.frame(CI[-which(CI$V1 %in% c(ctl$V1, ols)),])
 colnames(CI) <- "V1"
 
 #make file paths s R can find the files
@@ -70,7 +70,7 @@ gff = "/mnt/md0/brd_project/cow_immune/GCF_002263795.3_ARS-UCD2.0_genomic.gff.gz
 txdb.filename = "/mnt/md0/brd_project/cow_immune/cow_annotation.sqlite"
 
 #make and save txdb
-txdb <- makeTxDbFromGFF(file = gff)
+txdb <- txdbmaker::makeTxDbFromGFF(file = gff)
 saveDb(txdb, txdb.filename)
 
 #maketx2gene
@@ -116,36 +116,34 @@ CIdds <- DESeq(CIdds, BPPARAM = 42)
 
 CIresults <- results(CIdds, alpha = 0.05, contrast = c("Disease_State", "BRD", "Healthy"))
 
-vsd <- vst(CIdds)
+vsd <- vst(CIdds, blind = F)
+
+
+### make pCA
 #vsd <- varianceStabilizingTransformation(CIdds, blind = F)
-pca <- plotPCA(vsd,ntop=1000, intgroup=c("Disease_State"), pcsToUse = c(1,2)) + geom_point(alpha = .7) +
-  theme_cowplot() + ggtitle("Cow Gene Expression PCA") + stat_ellipse() + theme(plot.title = element_text(face = "plain")) + 
-  scale_color_manual(values = c("BRD" = "firebrick1", "Healthy"= "#4682B4"))
+pca <- plotPCA(vsd,ntop=10000, intgroup=c("Location", "Disease_State"), pcsToUse = c(1,2)) + geom_point(alpha = .7) +
+  theme_cowplot() + ggtitle("Cow Gene Expression PCA - No Batch Correction") + scale_color_brewer(palette = "Paired") #stat_ellipse() + theme(plot.title = element_text(face = "plain"))  
+  #scale_color_manual(values = c("BRD" = "firebrick1", "Healthy"= "#4682B4"))
 pca
 
 
+### Remove batch Effects
 mat <- vsd
 m <- assay(vsd)
 #mm <- model.matrix(~Disease_State + Location + Seqtype, colData(vsd))
-new <- limma::removeBatchEffect(m, batch1 = CI_table$Seqtype, batch2 = CI_table$Location)
+new <- limma::removeBatchEffect(m, batch = CI_table$Seqtype, covariates = model.matrix(~Location, CI_table)[,-1])
 assay(mat) <- new
-plotPCA(mat, ntop=1000, intgroup=c("Location", "Disease_State"))
+assay(mat)
+batch <- plotPCA(mat, ntop=10000, intgroup=c("Location", "Disease_State"))+ geom_point(alpha = .7) +
+  theme_cowplot() + ggtitle("Cow Gene Expression PCA - Batch Corrected") + scale_color_brewer(palette = "Paired")
 
-#ggsave("/mnt/md0/brd_project/figures/new_figures/expression_PCA.pdf", plot = pca)
+#make plot for supp info.
+corrected <- pca +  batch + patchwork::plot_layout(ncol = 2, guides = "collect") + patchwork::plot_annotation(tag_levels = "A") 
 
-#library("pheatmap")
-# select <- order(rowMeans(counts(CIdds,normalized=TRUE)),
-#                 decreasing=TRUE)[1:50]
-# df <- as.data.frame(colData(CIdds)[,c("Disease_State")])
-# hm = pheatmap(assay(vsd)[select,], cluster_rows=T, show_rownames=FALSE, show_colnames = F,
-#          cluster_cols=T, annotation_col=df)
-# 
-# #ggsave("heatmap_DE.pdf", plot = hm)
-# 
-# #png("../figures/deheatmp.png", width = 6, height = 8.5, units = "in", res = 300)
-# hm
-# #dev.off()
-# #summarize results
+ggsave("/mnt/md0/brd_project/figures/revised_figures/Batch_correction_PCA.pdf", plot = corrected, width = 14, height = 6)
+ggsave("/mnt/md0/brd_project/figures/revised_figures/Batch_correction_PCA.png", plot = corrected, width = 14, height = 6, dpi = 300)
+
+
 summary(CIresults)
 
 #subset significant genes
@@ -176,21 +174,6 @@ vol_plot <- ggplot(CIresults, aes(x=log2FoldChange, y=-log(padj,10))) +
 vol_plot
 
 
-
-
-# igs <- read.table("../cow_immune/immune_genes.txt", header = F)
-# 
-# idxs <- c()
-# for (i in 1:length(igs$V1)){
-#   ids <- grep(igs$V1[i], row.names(sig_res))
-#   idxs <- c(idxs, ids)
-# }
-# 
-# immune <- data.frame(sig_res[idxs,])
-#write.csv(immune, "../cow_immune/immune_subset.csv", quote = F)
-
-#grepl(igs$V1, row.names(sig_res))
-
 #get genes for gene set enrichment analysis
 gene_list <- CIresults$log2FoldChange
 names(gene_list) <- rownames(CIresults)
@@ -220,7 +203,7 @@ GO_DEGS <- clusterProfiler::dotplot(gse, showCategory=20, title = "Enriched GO T
 
 # Convert gene IDs for gseKEGG function
 # We will lose some genes here because not all IDs will be converted
-ids<-bitr(names(gene_list), fromType = "SYMBOL", toType = "ENTREZID", OrgDb=organism)
+ids<-clusterProfiler::bitr(names(gene_list), fromType = "SYMBOL", toType = "ENTREZID", OrgDb=organism)
 # remove duplicate IDS (here I use "ENSEMBL", but it should be whatever was selected as keyType)
 dedup_ids = ids[!duplicated(ids[c("SYMBOL")]),]
 
@@ -260,7 +243,7 @@ t15_pathways
 #dev.off()
 
 
-
+#Make GO figure
 GO_immune <- gse %>% filter(p.adjust < 0.05) %>%
   ggplot(showCategory = 20,
          aes(GeneRatio, forcats::fct_reorder(Description, GeneRatio))) + 
@@ -276,7 +259,7 @@ GO_immune <- gse %>% filter(p.adjust < 0.05) %>%
   ggtitle("GO Enrichment - DEGs")
 
 
-
+#make KEGG Figure
 KEGG_immune <- kk2 %>% filter(p.adjust < 0.05) %>%
   ggplot(showCategory = 20,
          aes(GeneRatio, forcats::fct_reorder(Description, GeneRatio))) + 
@@ -294,8 +277,677 @@ KEGG_immune <- kk2 %>% filter(p.adjust < 0.05) %>%
 # GO_immune
 # KEGG_immune
 
-im_fig <- vol_plot + pca + GO_immune  + KEGG_immune + patchwork::plot_annotation(tag_levels = "A")
-im_fig <- vol_plot | (GO_immune / KEGG_immune) + patchwork::plot_annotation(tag_levels = "A") #+ plot_layout(widths = c(2,1))
+des <- 
+"
+AB
+AC
+"
+
+###make host transcriptome final figure
+#im_fig <- vol_plot + pca + GO_immune  + KEGG_immune + patchwork::plot_annotation(tag_levels = "A")
+im_fig <- vol_plot | (GO_immune / KEGG_immune) + patchwork::plot_annotation(tag_levels = "A") #+ plot_layout(design = des)
+#im_fig <- vol_plot + GO_immune + KEGG_immune + patchwork::plot_annotation(tag_levels = "A") + plot_layout(design = des, wid)
+
 im_fig
-ggsave(plot = im_fig, filename =  "/mnt/md0/brd_project/figures/new_figures/immune_fig_allSamples_filt250.pdf", width = 11, height = 6, units = "in", dpi=300)
+#ggsave(plot = im_fig, filename =  "/mnt/md0/brd_project/figures/revised_figures/immune_fig_allSamples_REVISED.pdf", width = 11, height = 6, units = "in", dpi=300)
+#ggsave(plot = im_fig, filename =  "/mnt/md0/brd_project/figures/revised_figures/immune_fig_allSamples_REVISED.png", width = 11, height = 6, units = "in", dpi=300)
+
+godf <- data.frame(gse@result)
+keggdf <- data.frame(kk2@result)
+
+
+deglist <- list("DEGs" = data.frame(sig_res),
+    "GO Enrichment" = godf,
+     "KEGG Enrichment" = keggdf)
+#save supplementary information
+openxlsx::write.xlsx(deglist, "/mnt/md0/brd_project/SupplementaryTable_DEGs.xlsx")
+
+############## WGCNA #############
+
+#get batch-corrected counts and filter them based on variance
+expr <- t(new)
+gene_var <- colVars(expr)
+keep <- gene_var > quantile(gene_var, 0.75)
+expr_filt <- expr[, keep]
+
+library(WGCNA)
+
+sampleTree <- hclust(
+  dist(expr_filt),
+  method = "average"
+)
+
+plot(sampleTree)
+
+powers <- c(1:50)
+
+sft <- pickSoftThreshold(
+  expr_filt,
+  powerVector = powers,
+  networkType = "signed"
+)
+
+par(mfrow = c(1,2));
+cex1 = 0.9;
+
+plot(sft$fitIndices[, 1],
+     -sign(sft$fitIndices[, 3]) * sft$fitIndices[, 2],
+     xlab = "Soft Threshold (power)",
+     ylab = "Scale Free Topology Model Fit, signed R^2",
+     main = paste("Scale independence")
+)
+text(sft$fitIndices[, 1],
+     -sign(sft$fitIndices[, 3]) * sft$fitIndices[, 2],
+     labels = powers, cex = cex1, col = "red"
+)
+abline(h = 0.80, col = "red")
+plot(sft$fitIndices[, 1],
+     sft$fitIndices[, 5],
+     xlab = "Soft Threshold (power)",
+     ylab = "Mean Connectivity",
+     type = "n",
+     main = paste("Mean connectivity")
+)
+text(sft$fitIndices[, 1],
+     sft$fitIndices[, 5],
+     labels = powers,
+     cex = cex1, col = "red")
+
+picked_power = 26
+temp_cor <- cor       
+cor <- WGCNA::cor         # Force it to use WGCNA cor function (fix a namespace conflict issue)
+netwk <- blockwiseModules(expr_filt,                # <= input here
+                          
+                          # == Adjacency Function ==
+                          power = picked_power,                # <= power here
+                          networkType = "signed",
+                          
+                          # == Tree and Block Options ==
+                          deepSplit = 2,
+                          pamRespectsDendro = F,
+                          # detectCutHeight = 0.75,
+                          minModuleSize = 30,
+                          maxBlockSize = 4000,
+                          
+                          # == Module Adjustments ==
+                          reassignThreshold = 0,
+                          mergeCutHeight = 0.25,
+                          
+                          # == TOM == Archive the run results in TOM file (saves time)
+                          saveTOMs = T,
+                          saveTOMFileBase = "ER",
+                          
+                          # == Output Options
+                          numericLabels = T,
+                          verbose = 3)
+
+
+# Convert labels to colors for plotting
+mergedColors = labels2colors(netwk$colors)
+# Plot the dendrogram and the module colors underneath
+plotDendroAndColors(
+  netwk$dendrograms[[1]],
+  mergedColors[netwk$blockGenes[[1]]],
+  "Module colors",
+  dendroLabels = FALSE,
+  hang = 0.03,
+  addGuide = TRUE,
+  guideHang = 0.05 )
+
+module_df <- data.frame(
+  gene_id = names(netwk$colors),
+  colors = labels2colors(netwk$colors)
+)
+
+
+# Get Module Eigengenes per cluster
+MEs0 <- moduleEigengenes(expr_filt, mergedColors)$eigengenes
+
+# Reorder modules so similar modules are next to each other
+MEs0 <- orderMEs(MEs0)
+module_order = names(MEs0) %>% gsub("ME","", .)
+
+# Add treatment names
+MEs0$treatment = row.names(MEs0)
+
+# tidy & plot data
+mME = MEs0 %>%
+  pivot_longer(-treatment) %>%
+  mutate(
+    name = gsub("ME", "", name),
+    name = factor(name, levels = module_order)
+  )
+
+mME %>% ggplot(., aes(x=treatment, y=name, fill=value)) +
+  geom_tile() +
+  theme_bw() +
+  scale_fill_gradient2(
+    low = "blue",
+    high = "red",
+    mid = "white",
+    midpoint = 0,
+    limit = c(-1,1)) +
+  theme(axis.text.x = element_text(angle=90)) +
+  labs(title = "Module-trait Relationships", y = "Modules", fill="corr")
+
+
+# pick out a few modules of interest here
+modules_of_interest = c("grey", "turquoise", "blue", "yellow", "brown", "green")
+
+# Pull out list of genes in that module
+submod = module_df %>%
+  subset(colors %in% modules_of_interest)
+
+row.names(module_df) = module_df$gene_id
+
+
+# Get normalized expression for those genes
+expr_filt[1:5,1:10]
+texp <- t(expr_filt)
+subexpr = texp[submod$gene_id,]
+
+submod_df = data.frame(subexpr) %>%
+  mutate(
+    gene_id = row.names(.)
+  ) %>%
+  pivot_longer(-gene_id) %>%
+  mutate(
+    module = module_df[gene_id,]$colors
+  )
+
+submod_df %>% ggplot(., aes(x=name, y=value, group=gene_id)) +
+  geom_line(aes(color = module),
+            alpha = 0.2) +
+  theme_bw() +
+  theme(
+    axis.text.x = element_text(angle = 90)
+  ) +
+  facet_grid(rows = vars(module)) +
+  labs(x = "treatment",
+       y = "normalized expression")
+
+
+#### CHECK FOR GO TERM ENRICHMENT IN THE WGCNA GROUPS
+greygenes <- subset(submod, colors == "grey")$gene_id
+greygo <- enrichGO(greygenes, 
+             ont ="BP", 
+             keyType = "SYMBOL", 
+             #nPerm = 10000, 
+             minGSSize = 3, 
+             maxGSSize = 800, 
+             pvalueCutoff = 0.05, 
+             #verbose = TRUE,
+             #eps = 0,
+             OrgDb = org.Bt.eg.db, 
+             pAdjustMethod = "BH")
+
+
+turqgenes <- subset(submod, colors == "turquoise")$gene_id 
+turqgo <- enrichGO(turqgenes, 
+                   ont ="BP", 
+                   keyType = "SYMBOL", 
+                   #nPerm = 10000, 
+                   minGSSize = 3, 
+                   maxGSSize = 800, 
+                   pvalueCutoff = 0.05, 
+                   #verbose = TRUE,
+                   #eps = 0,
+                   OrgDb = org.Bt.eg.db, 
+                   pAdjustMethod = "BH")
+
+bluegenes <- subset(submod, colors == "blue")$gene_id 
+bluego <- enrichGO(bluegenes, 
+                   ont ="BP", 
+                   keyType = "SYMBOL", 
+                   #nPerm = 10000, 
+                   minGSSize = 3, 
+                   maxGSSize = 800, 
+                   pvalueCutoff = 0.05, 
+                   #verbose = TRUE,
+                   #eps = 0,
+                   OrgDb = org.Bt.eg.db, 
+                   pAdjustMethod = "BH")
+
+
+yellowgenes <- subset(submod, colors == "yellow")$gene_id 
+yellowgo <- enrichGO(yellowgenes, 
+                   ont ="BP", 
+                   keyType = "SYMBOL", 
+                   #nPerm = 10000, 
+                   minGSSize = 3, 
+                   maxGSSize = 800, 
+                   pvalueCutoff = 0.05, 
+                   #verbose = TRUE,
+                   #eps = 0,
+                   OrgDb = org.Bt.eg.db, 
+                   pAdjustMethod = "BH")
+
+browngenes <- subset(submod, colors == "brown")$gene_id 
+browngo <- enrichGO(browngenes, 
+                   ont ="BP", 
+                   keyType = "SYMBOL", 
+                   #nPerm = 10000, 
+                   minGSSize = 3, 
+                   maxGSSize = 800, 
+                   pvalueCutoff = 0.05, 
+                   #verbose = TRUE,
+                   #eps = 0,
+                   OrgDb = org.Bt.eg.db, 
+                   pAdjustMethod = "BH")
+
+greengenes <- subset(submod, colors == "green")$gene_id 
+greengo <- enrichGO(greengenes, 
+                   ont ="BP", 
+                   keyType = "SYMBOL", 
+                   #nPerm = 10000, 
+                   minGSSize = 3, 
+                   maxGSSize = 800, 
+                   pvalueCutoff = 0.05, 
+                   #verbose = TRUE,
+                   #eps = 0,
+                   OrgDb = org.Bt.eg.db, 
+                   pAdjustMethod = "BH")
+
+View(greengo@result) # no sig
+View(bluego@result) # no sig - immune
+View(yellowgo@result) # protein glycosylation
+View(browngo@result) #cellular respiration
+View(turqgo@result) # Immune
+View(yellowgo@result) # Viral immunity
+
+# save as supplemental data
+Aen <- data.frame(turqgo@result)
+Ben <- data.frame(browngo@result)
+Cen <- data.frame(bluego@result)
+Den <- data.frame(greengo@result)
+Een <- data.frame(yellowgo@result)
+Uen <- data.frame(yellowgo@result)
+
+A_ids <- data.frame("GeneName" = mapIds(org.Bt.eg.db, turqgenes, 'GENENAME', 'SYMBOL'))
+B_ids <- data.frame("GeneName" = mapIds(org.Bt.eg.db, browngenes, 'GENENAME', 'SYMBOL'))
+C_ids <- data.frame("GeneName" = mapIds(org.Bt.eg.db, bluegenes, 'GENENAME', 'SYMBOL'))
+D_ids <- data.frame("GeneName" = mapIds(org.Bt.eg.db, greengenes, 'GENENAME', 'SYMBOL'))
+E_ids <- data.frame("GeneName" = mapIds(org.Bt.eg.db, yellowgenes, 'GENENAME', 'SYMBOL'))
+Un_ids <- data.frame("GeneName" = mapIds(org.Bt.eg.db, greygenes, 'GENENAME', 'SYMBOL'))
+
+datalist <- list("ModuleA" = A_ids,
+                 "ModuleB" = B_ids,
+                 "ModuleC" = C_ids,
+                 "ModuleD" = D_ids,
+                 "ModuleE" = E_ids,
+                 "Unclassified" = Un_ids,
+                 "ModuleA Enrich" = Aen,
+                 "ModuleB Enrich" = Ben,
+                 "ModuleC Enrich" = Cen,
+                 "ModuleD Enrich" = Den,
+                 "ModuleE Enrich" = Een,
+                 "Unclassified Enrich" = Uen)
+
+openxlsx::write.xlsx(datalist, file = "/mnt/md0/brd_project/Supplementary_table_WGCNA.xlsx", rowNames = T)
+
+## Turqoise group is enriched with viral GO terms.
+
+#Correlate to other viruses/viral abundance
+viral_rpkm <- "/mnt/md0/brd_project/viral_RPKMs_REVISED.tsv"
+bac_abun <- "/mnt/md0/brd_project/bacteria/standard_kraken/bacteria_abundances_REVISED.csv"
+rpkms <- read.csv(viral_rpkm)
+ba <- read.csv(bac_abun)
+bal <- ba %>% dplyr::select(SRA, Abundance, Genus) %>% pivot_wider(id_cols = SRA, values_from = "Abundance", names_from = "Genus")
+data.table::setDT(rpkms)
+rpkmt <- data.table::transpose(rpkms, make.names = "X", keep.names = "SRA")
+rpkmt$Viral_abundance <- rowSums(rpkmt[,2:ncol(rpkmt)])
+rpkmt <- rpkmt[-which(rpkmt$SRA %in% ols),]
+alphadiv <- "/mnt/md0/brd_project/bacteria/standard_kraken/shannon_diversity_REVISED.csv"
+adiv <- read.csv(alphadiv)
+adiv <- adiv[,2:3]
+names(adiv)[1] <- "SRA"
+
+dat <- data.frame(
+  SRA = rownames(MEs0),
+  MEturquoise = MEs0$MEturquoise,
+  MEgrey = MEs0$MEgrey,
+  MEgreen = MEs0$MEgreen,
+  MEbrown = MEs0$MEbrown,
+  MEblue = MEs0$MEblue,
+  MEyellow = MEs0$MEyellow
+) |>
+  dplyr::inner_join(rpkmt, by = "SRA") %>%
+  dplyr::inner_join(CI_table, by = "SRA") %>%
+  dplyr::inner_join(bal, by = "SRA") %>%
+  dplyr::inner_join(adiv, by = "SRA")
+dat$Disease_State <- factor(dat$Disease_State, levels = c("BRD", "Healthy"))
+
+dat <- subset(dat, Location != "USA.Kansas")
+
+### Which modules are correlated to disease state?
+ME_results <- lapply(
+  c(colnames(dat)[2:7]),
+  function(v) {
+
+    fite <- lm(
+     dat[,v] ~ Disease_State +
+        Seqtype +
+        Location,
+      data = dat
+    )
+    # fitv <- residuals(lm(
+    #   dat[[v]] ~ Disease_State +
+    #     Seqtype +
+    #     Location,
+    #   data = dat
+    # ))
+    print(summary(fite))
+    data.frame(
+      ME = v,
+      p = broom::tidy(summary(fite))$p.value[[2]],
+      beta = broom::tidy(summary(fite))$estimate[[2]]
+    )
+  }
+)
+
+ME_results <- bind_rows(ME_results)
+
+ME_results$FDR <-
+  p.adjust(ME_results$p, "BH")
+
+lm_brown <- lm(
+  MEbrown ~ Disease_State +
+    Seqtype +
+    Location,
+  data = dat
+)
+summary(lm_brown)
+
+lm_grey <- lm(
+  MEgrey ~ Disease_State +
+    Seqtype +
+    Location,
+  data = dat
+)
+summary(lm_grey)
+
+lm_yellow <- lm(
+  MEyellow ~ Disease_State +
+    Seqtype +
+    Location,
+  data = dat
+)
+summary(lm_yellow)
+
+lm_turqoise <- lm(
+  MEturquoise ~ Disease_State +
+    Shannon +
+    IDV +
+    BHV1 +
+    Mycoplasmopsis +
+    Pasteurella +
+    Histophilus +
+    Mannheimia +
+    Moraxella +
+    Seqtype +
+    Location,
+  data = dat
+)
+bturq <- broom::tidy(summary(lm_turqoise))
+
+
+# lm_grey <- lm(
+#   MEgrey ~ Disease_State +
+#     Seqtype +
+#     Location,
+#   data = dat
+# )
+# summary(lm_grey)
+
+
+lm_grey <- lm(
+  MEgrey ~ Disease_State +
+    Shannon +
+    IDV +
+    BHV1 +
+    Mycoplasmopsis +
+    Pasteurella +
+    Histophilus +
+    Mannheimia +
+    Moraxella +
+    Seqtype +
+    Location,
+  data = dat
+)
+bgray <- broom::tidy(summary(lm_grey))
+
+lm_yellow <- lm(
+  MEyellow ~ Disease_State +
+    Shannon +
+    IDV +
+    BHV1 +
+    Mycoplasmopsis +
+    Pasteurella +
+    Histophilus +
+    Mannheimia +
+    Moraxella +
+    Seqtype +
+    Location,
+  data = dat
+)
+byel <- broom::tidy(summary(lm_yellow))
+
+
+lm_brown <- lm(
+  MEbrown ~ Disease_State +
+    Shannon +
+    IDV +
+    BHV1 +
+    Mycoplasmopsis +
+    Pasteurella +
+    Histophilus +
+    Mannheimia +
+    Moraxella + 
+    Seqtype +
+    Location,
+  data = dat
+)
+bbrow <- broom::tidy(summary(lm_brown))
+
+
+
+lm_blue <- lm(
+  MEblue ~ Disease_State +
+    Shannon +
+    IDV +
+    BHV1 +
+    Mycoplasmopsis +
+    Pasteurella +
+    Histophilus +
+    Mannheimia +
+    Moraxella + 
+    Seqtype +
+    Location,
+  data = dat
+)
+bblue <- broom::tidy(summary(lm_blue))
+
+
+lm_green <- lm(
+  MEgreen ~ Disease_State +
+    Shannon +
+    IDV +
+    BHV1 +
+    Mycoplasmopsis +
+    Pasteurella +
+    Histophilus +
+    Mannheimia +
+    Moraxella + 
+    Seqtype +
+    Location,
+  data = dat
+)
+bgre <- broom::tidy(summary(lm_green))
+
+ripA <- relaimpo::calc.relimp(lm_turqoise,type = "lmg")
+ripC <-relaimpo::calc.relimp(lm_blue,type = "lmg")
+ripB <-relaimpo::calc.relimp(lm_brown,type = "lmg")
+ripE <-relaimpo::calc.relimp(lm_yellow,type = "lmg")
+ripD <-relaimpo::calc.relimp(lm_green,type = "lmg")
+ripU <-relaimpo::calc.relimp(lm_grey,type = "lmg")
+
+riplist <- list(ModuleA = ripA@lmg, ModuleB = ripB@lmg,
+            ModuleC = ripC@lmg, ModuleD = ripD@lmg,
+            ModuleE = ripE@lmg, Unclassified = ripU@lmg)
+
+riplist <- list(ripA@lmg, ripB@lmg,
+                ripC@lmg, ripD@lmg,
+                ripE@lmg, ripU@lmg)
+
+ripdf <- bind_rows(riplist, .id = "id")
+
+blis <- list(ModuleA = data.frame(bturq), ModuleB = data.frame(bbrow), 
+             ModuleC = data.frame(bblue), ModuleD = data.frame(bgre), ModuleE = data.frame(byel), Unclassified = data.frame(bgray))
+
+for (x in 1:length(blis)){
+  blis[[x]]$FDR <- p.adjust(blis[[x]][,5], method = "BH")
+}
+
+blis
+openxlsx::write.xlsx(blis, file = "/mnt/md0/brd_project/supplementary_table_Table3Stats.xlsx")
+
+########## Raw correlations
+virus_results <- lapply(
+  c(colnames(rpkmt)[2:16]),
+  function(v) {
+    
+    ct <- cor.test(
+      dat$MEturquoise,
+      dat[,v],
+      method = "spearman",
+      exact = FALSE
+    )
+    
+    data.frame(
+      Virus = v,
+      p = ct$p.value,
+      rho = ct$estimate[[1]]
+    )
+  }
+)
+
+virus_results <- bind_rows(virus_results)
+
+virus_results$FDR <-
+  p.adjust(virus_results$p, "BH")
+
+brbv_lm <- lm(
+  MEbrown ~ BrBv +
+    Disease_State +
+    Seqtype +
+    Location,
+  data = dat
+)
+
+summary(brbv_lm)
+
+beve_lm <- lm(
+  MEblue ~ IDV +
+    Disease_State +
+    Seqtype +
+    Location,
+  data = dat
+)
+summary(beve_lm)
+
+
+idv_lm <- lm(
+  MEblue ~ IDV +
+    Disease_State +
+    Seqtype +
+    Location,
+  data = dat
+)
+summary(idv_lm)
+
+va_lm <- lm(
+  MEturquoise ~ BEVE +
+    Disease_State +
+    Seqtype +
+    Location,
+  data = dat
+)
+summary(va_lm)
+
+
+bcov_lm <- lm(
+  MEgrey ~ BCoV +
+    Disease_State +
+    Seqtype +
+    Location,
+  data = dat
+)
+summary(bcov_lm)
+
+bcov_lmy <- lm(
+  MEyellow ~ BPV +
+    Disease_State +
+    Seqtype +
+    Location,
+  data = dat
+)
+summary(bcov_lmy)
+
+
+#correlate to alpha diversity
+adcor <- cor.test(dat$MEblue, dat$Shannon, method = "spearman")
+adcor
+
+ad_lm <- lm(MEyellow ~ Shannon +
+                Disease_State,
+                #Seqtype +
+                #Location,
+              data = subset(dat, Location == "Australia"))
+
+ad_lm <- lm(MEturquoise ~ Shannon +
+              Disease_State,
+              #Seqtype +
+              #Location,
+            data = subset(dat, Seqtype == "Nanopore"))
+summary(ad_lm)
+
+# bacdat <- na.omit(dat)
+# 
+# bacteria_results <- lapply(
+#   c(names(bacdat)[21:ncol(bacdat)]),
+#   function(v) {
+#     
+#     fite <- residuals(lm(
+#       MEturquoise ~ bacdat$Disease_State +
+#         bacdat$Seqtype +
+#         bacdat$Location,
+#       data = bacdat
+#     ))
+#     fitv <- residuals(lm(
+#       bacdat[[v]] ~ Disease_State +
+#         bacdat$Seqtype +
+#         bacdat$Location,
+#       data = bacdat
+#     ))
+#     
+#     ct <- cor.test(
+#       fite,
+#       fitv,
+#       method = "spearman"
+#     )
+#     
+#     data.frame(
+#       bacteria = v,
+#       p = ct$p.value,
+#       rho = ct$estimate[[1]]
+#     )
+#   }
+# )
+# 
+# bacteria_results <- bind_rows(bacteria_results)
+# 
+# bacteria_results$FDR <-
+#   p.adjust(bacteria_results$p, "BH")
+
+
 
